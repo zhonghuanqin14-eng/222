@@ -1,0 +1,212 @@
+import pandas as pd
+import numpy as np
+from pathlib import Path
+import re
+
+class ShipmentPlanAgent:
+    def __init__(self):
+        # 账号映射字典
+        self.account_mapping = {
+            'YeonhaToys': 'Yeonha Toys',
+            'KarberDark': 'KarberDark',
+            'Jasnkkont': 'JASNKKONT',
+            'Laxdacee': 'Laxdacee',
+            'Mapixo': 'MAPIXO',
+            'Byonebye': 'Byonebye',
+            'Bakatatoyz': 'Bakatatoyz',
+            'Uzoxlsn': 'Uzoxlsn',
+            'Cawiew': 'CAWIEW',
+            'MOEAWS': 'MOEAWS',
+            'YeoNational&Toys': 'YeoNational&Toys',
+            'SWUNXION': 'SHUNHUIX'
+        }
+        
+        # 国家映射字典
+        self.country_mapping = {
+            'us': 'US',
+            'ca': 'CA',
+            'uk': 'UK',
+            'eu': 'EU'
+        }
+    
+    def read_inventory_file(self, file_path):
+        """读取库存表文件"""
+        try:
+            df = pd.read_excel(file_path, header=0)
+            print(f"成功读取文件: {file_path}")
+            print(f"总行数: {len(df)}")
+            return df
+        except Exception as e:
+            print(f"读取文件失败: {e}")
+            return None
+    
+    def preprocess_data(self, df):
+        """预处理数据，填充合并单元格的SKU"""
+        # 创建新的DataFrame副本
+        processed_df = df.copy()
+        
+        # 处理SKU列：如果为空，则填充为该组的第一行SKU
+        current_sku = None
+        for i in range(len(processed_df)):
+            # 检查SKU列（第5列，索引为4）
+            sku_value = processed_df.iloc[i, 4]
+            
+            # 如果当前行的SKU不为空且不是NaN，则更新current_sku
+            if pd.notna(sku_value) and str(sku_value).strip() != '':
+                current_sku = sku_value
+            
+            # 如果当前行SKU为空，且current_sku不为空，则填充
+            elif current_sku is not None and (pd.isna(sku_value) or str(sku_value).strip() == ''):
+                processed_df.iloc[i, 4] = current_sku
+        
+        return processed_df
+    
+    def filter_shipment_rows(self, df):
+        """筛选出自定义发货列有数据的行"""
+        # 自定义发货列是最后一列（索引为20）
+        custom_shipment_col = df.columns[-1]
+        
+        # 筛选出自定义发货列不为空且不为NaN的行
+        mask = df[custom_shipment_col].notna() & (df[custom_shipment_col].astype(str).str.strip() != '')
+        filtered_df = df[mask].copy()
+        
+        print(f"筛选出自定义发货有数据的行数: {len(filtered_df)}")
+        return filtered_df
+    
+    def format_account_country(self, account, country):
+        """格式化账号和国家"""
+        # 处理账号
+        account_str = str(account) if pd.notna(account) else ''
+        account_formatted = self.account_mapping.get(account_str, account_str)
+        
+        # 处理国家
+        country_str = str(country) if pd.notna(country) else ''
+        country_formatted = self.country_mapping.get(country_str.lower(), country_str.upper())
+        
+        return f"{account_formatted}-{country_formatted}"
+    
+    def create_shipment_plan(self, filtered_df):
+        """创建发货计划表"""
+        # 创建空的发货计划DataFrame，列名与附件2一致
+        shipment_columns = ['*店铺', '*包装类型', 'MSKU', 'FNSKU', 'SKU', '单箱数量', '箱数', 
+                           '*计划发货量', '运输方式', '物流商', '物流渠道', '工厂直发', 
+                           '发货仓库', '发货仓库店铺', '发货仓库FNSKU', '中转仓库', '第三方仓SKU', '备注']
+        
+        shipment_df = pd.DataFrame(columns=shipment_columns)
+        
+        # 遍历筛选后的行
+        for idx, row in filtered_df.iterrows():
+            # 获取需要的字段
+            account = row['账号'] if pd.notna(row['账号']) else ''
+            country = row['国家'] if pd.notna(row['国家']) else ''
+            sku = row['SKU'] if pd.notna(row['SKU']) else ''
+            fnsku = row['标签（FNSKU)'] if pd.notna(row['标签（FNSKU)']) else ''
+            custom_shipment = row.iloc[-1]  # 自定义发货列
+            
+            # 格式化店铺名
+            shop_name = self.format_account_country(account, country)
+            
+            # 创建新行
+            new_row = {
+                '*店铺': shop_name,
+                '*包装类型': '',  # 默认为空
+                'MSKU': '',  # 默认为空
+                'FNSKU': fnsku,
+                'SKU': sku,
+                '单箱数量': '',  # 默认为空
+                '箱数': '',  # 默认为空
+                '*计划发货量': custom_shipment,
+                '运输方式': '',  # 默认为空
+                '物流商': '',  # 默认为空
+                '物流渠道': '',  # 默认为空
+                '工厂直发': '',  # 默认为空
+                '发货仓库': '',  # 默认为空
+                '发货仓库店铺': '',  # 默认为空
+                '发货仓库FNSKU': '',  # 默认为空
+                '中转仓库': '',  # 默认为空
+                '第三方仓SKU': '',  # 默认为空
+                '备注': ''  # 默认为空
+            }
+            
+            # 使用pd.concat代替已弃用的append方法
+            shipment_df = pd.concat([shipment_df, pd.DataFrame([new_row])], ignore_index=True)
+        
+        return shipment_df
+    
+    def save_shipment_plan(self, shipment_df, output_path):
+        """保存发货计划表"""
+        try:
+            shipment_df.to_excel(output_path, index=False)
+            print(f"发货计划表已保存到: {output_path}")
+            return True
+        except Exception as e:
+            print(f"保存文件失败: {e}")
+            return False
+    
+    def run(self, input_file_path, output_file_path):
+        """运行AI Agent"""
+        print("=" * 50)
+        print("发货计划AI Agent启动")
+        print("=" * 50)
+        
+        # 1. 读取库存表
+        inventory_df = self.read_inventory_file(input_file_path)
+        if inventory_df is None:
+            return False
+        
+        # 2. 预览原始数据
+        print("\n原始数据预览（前3行）:")
+        print(inventory_df.head(3))
+        
+        # 3. 预处理数据（处理合并单元格的SKU）
+        processed_df = self.preprocess_data(inventory_df)
+        print("\n预处理完成")
+        
+        # 4. 筛选自定义发货有数据的行
+        filtered_df = self.filter_shipment_rows(processed_df)
+        
+        if len(filtered_df) == 0:
+            print("没有找到自定义发货有数据的行，程序退出")
+            return False
+        
+        # 5. 显示筛选结果
+        print("\n筛选结果预览:")
+        for idx, row in filtered_df.iterrows():
+            account = row['账号'] if pd.notna(row['账号']) else ''
+            country = row['国家'] if pd.notna(row['国家']) else ''
+            sku = row['SKU'] if pd.notna(row['SKU']) else ''
+            fnsku = row['标签（FNSKU)'] if pd.notna(row['标签（FNSKU)']) else ''
+            custom_shipment = row.iloc[-1]
+            
+            print(f"  账号: {account}, 国家: {country}, SKU: {sku}, FNSKU: {fnsku}, 发货量: {custom_shipment}")
+        
+        # 6. 创建发货计划表
+        shipment_df = self.create_shipment_plan(filtered_df)
+        print(f"\n已创建发货计划表，共 {len(shipment_df)} 行")
+        
+        # 7. 预览发货计划表
+        print("\n发货计划表预览:")
+        print(shipment_df[['*店铺', 'FNSKU', 'SKU', '*计划发货量']].head())
+        
+        # 8. 保存发货计划表
+        success = self.save_shipment_plan(shipment_df, output_file_path)
+        
+        if success:
+            print("\n" + "=" * 50)
+            print("处理完成！")
+            print("=" * 50)
+        
+        return success
+
+
+# 使用示例
+if __name__ == "__main__":
+    # 创建Agent实例
+    agent = ShipmentPlanAgent()
+    
+    # 设置输入输出文件路径
+    input_file = "有声动物书-发光船-库存表.xlsx"  # 附件1
+    output_file = "发货计划表_生成结果.xlsx"       # 输出文件
+    
+    # 运行Agent
+    agent.run(input_file, output_file)
